@@ -1,0 +1,48 @@
+name: Jellybeam problem report
+description: Report a problem with the macOS app.
+title: "[Mac] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The app's log is at `~/Library/Logs/Jellybeam/jellybeam.log` (crash reports in `panic.log`
+        beside it). Logs can include server addresses, media titles, local paths and error details.
+        Review and redact identifying data and credentials before attaching them. This report is public.
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Playback
+        - Sign-in
+        - Browsing
+        - Performance
+        - Crash
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What you expected, and what the app did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Optional. What to do to see it again.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: macOS version, Mac model, Jellybeam version (About window), Jellyfin server version.
+      placeholder: "macOS 15.6, MacBook Pro M4, Jellybeam 0.1.0, Jellyfin 10.11.10"
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: For playback problems
+      description: Container and codecs of the file (`ffprobe` output if you have it), and whether the OSD said Direct Play or TRANSCODE.

@@ -1,0 +1,45 @@
+name: Source checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-tree:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Public files and local document links
+        run: python3 scripts/check-public-tree.py
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Scan the published source snapshot for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_dir="$(mktemp -d)"
+          trap 'rm -rf "$scan_dir"' EXIT
+          cd "$scan_dir"
+          archive=gitleaks_8.30.1_linux_x64.tar.gz
+          release=https://github.com/gitleaks/gitleaks/releases/download/v8.30.1
+          curl --fail --location --silent --show-error "$release/$archive" -o "$archive"
+          curl --fail --location --silent --show-error "$release/gitleaks_8.30.1_checksums.txt" -o checksums.txt
+          awk -v archive="$archive" '$2 == archive { print }' checksums.txt > expected.txt
+          test -s expected.txt
+          sha256sum --check expected.txt
+          tar -xzf "$archive" gitleaks
+          mkdir source
+          git -C "$GITHUB_WORKSPACE" archive HEAD | tar -x -C source
+          ./gitleaks dir source --redact=100 --no-banner
+

@@ -1,0 +1,33 @@
+[package]
+name = "jellybeam-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.jellyfin-api]
+path = "../crates/jellyfin-api"
+
+# The fuzz crate is deliberately outside the main workspace (see root
+# Cargo.toml `exclude`): it builds with nightly + libFuzzer flags that the
+# normal dev/test profiles must never inherit.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_models_deser"
+path = "fuzz_targets/fuzz_models_deser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ws_decode"
+path = "fuzz_targets/fuzz_ws_decode.rs"
+test = false
+doc = false

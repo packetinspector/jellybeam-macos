@@ -1,0 +1,39 @@
+[package]
+name = "media-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jellyfin-api = { path = "../jellyfin-api" }
+jellyfin-core = { path = "../jellyfin-core" }
+# `apply_local_user_data` stamps `last_played_date` to "now" in
+# the same RFC3339 shape every other date column here uses (`rows.rs`'s
+# `extract_columns`) -- same version/features jellyfin-api already pulls in
+# for `BaseItemDto`'s own date fields, just depended on directly rather than
+# only transitively.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "fs"] }
+tracing.workspace = true
+# Bundled SQLite: no system libsqlite3 dependency, identical version across
+# dev/CI/notarized release builds (same rationale as jellyfin-api's rustls
+# choice for TLS). "backup" is not needed; kept minimal on purpose.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Image fetches are our own (JellyfinClient::image_url gives a URL, the
+# actual GET is media-cache's job) -- same TLS stack as jellyfin-api.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+lru = "0.18"
+uuid = "1"
+# ImageCache disk filenames are hashed (path traversal via
+# item_id/tag) -- only need the hash function itself; no OID feature needed.
+sha2 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "test-util", "net", "io-util"] }
+
+[lints]
+workspace = true

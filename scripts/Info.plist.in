@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>tv.jellybeam.Jellybeam</string>
+	<key>CFBundleName</key>
+	<string>Jellybeam</string>
+	<key>CFBundleDisplayName</key>
+	<string>Jellybeam</string>
+	<key>CFBundleExecutable</key>
+	<string>jellybeam</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@JELLYBEAM_VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@JELLYBEAM_VERSION@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.entertainment</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Jellybeam connects to your Jellyfin server on the local network.</string>
+</dict>
+</plist>

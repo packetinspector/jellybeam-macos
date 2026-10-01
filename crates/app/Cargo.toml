@@ -1,0 +1,105 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "jellybeam"
+path = "src/main.rs"
+
+[dependencies]
+jellyfin-api = { path = "../jellyfin-api" }
+jellyfin-core = { path = "../jellyfin-core" }
+media-cache = { path = "../media-cache" }
+player = { path = "../player" }
+# Discover: a Seerr/Jellyseerr client, pure-Rust (no mirror/media-cache
+# involvement -- see `discover/mod.rs`'s "Non-negotiable constraints").
+seerr-api = { path = "../seerr-api" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Mirrors tracing output to `~/Library/Logs/Jellybeam/jellybeam.log` in addition to
+# stderr (`main.rs::init_tracing`) -- a Finder-launched session has no
+# attached terminal, so stderr-only logging left those runs completely
+# log-blind. Non-blocking so the file write never stalls the log call site.
+tracing-appender = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+# Formats/compares `CardRow::premiere_date`/
+# `BaseItemDto::premiere_date` (both already `chrono::DateTime<Utc>`-backed,
+# transitively via jellyfin-api/media-cache) to decide a virtual episode's
+# "Airs <date>" vs "Missing" label -- see cards.rs::virtual_status_label.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+# GPUI: pinned because its pre-1.0 API changes between releases, and the
+# `runtime_shaders` feature avoids needing a full Xcode install
+# (`xcrun metal`) for shader compilation.
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+
+# objc2 family, pinned to versions known to work with the gpui version
+# above (same embedding mechanism, swapped from CAMetalLayer to
+# NSOpenGLContext for mpv's GL render API — see src/gl_video.rs).
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
+raw-window-handle = "0.6.2"
+
+# CALayer masking for the Miniplayer video-visibility fix (see
+# gl_video.rs's "Miniplayer video visibility" doc section): GPUI's own
+# paint model has no subtractive "punch a hole" primitive (fixed
+# premultiplied `SourceOver` blending, `ContentMask` is a single
+# intersective clip rect, not a region difference), so the transparent
+# cutout that lets the embedded video NSView show through GPUI's opaque
+# Browse-UI paint is carved at the real AppKit/CoreAnimation compositing
+# layer instead, via a `CAShapeLayer` mask on GPUI's own content view.
+# Both already transitively pulled in by `objc2-app-kit`'s default features
+# (`NSView::layer()`), pinned to the exact same resolved version here.
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+    "CALayer",
+    "CAShapeLayer",
+    "objc2-core-graphics",
+] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
+    "CGPath",
+    "CGColor",
+    "objc2",
+] }
+
+# MPNowPlayingInfoCenter / MPRemoteCommandCenter (media keys + Control
+# Center Now Playing widget), pinned to versions known to work together —
+# see src/now_playing.rs.
+block2 = "0.6.2"
+objc2-media-player = "0.3.2"
+
+# Keychain (token + device id persistence).
+security-framework = "3"
+
+# Image pipeline: decode fetched poster/backdrop bytes into
+# GPUI textures, and paint a blurhash placeholder before the real image
+# arrives — see src/image_store.rs and docs/DATA.md §3/§4.
+image = "0.25"
+blurhash = "0.2"
+smallvec = "1"
+
+# Trickplay sprite-sheet tile fetch (docs/UX-SPEC.md §4): a direct HTTP GET of
+# `JellyfinClient::trickplay_tile_url`'s pre-built URL, same TLS backend
+# choice as `jellyfin-api`'s own reqwest dependency (rustls, no system
+# OpenSSL) -- see trickplay.rs.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# Embeds `assets/icons/*.svg` (the OSD's Lucide icon set) into the
+# binary so `gpui::svg().path("icons/....svg")` resolves without any
+# runtime disk/network IO -- see src/assets.rs. Already a transitive dep of
+# `gpui` itself (see Cargo.lock), so this pins the same version rather than
+# introducing a new one.
+rust-embed = "8"
+
+[dev-dependencies]
+# `#[gpui::test]` / `TestAppContext` -- headless entity-lease regression tests
+# (see `text_input.rs`'s `entity_lease_regression` module) that need gpui's
+# real `App`/entity-map semantics without a live AppKit window.
+gpui = { version = "0.2.2", features = ["test-support"] }
+
+[lints]
+workspace = true

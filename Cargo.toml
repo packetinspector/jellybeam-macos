@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/jellyfin-api",
+    "crates/jellyfin-core",
+    "crates/media-cache",
+    "crates/player",
+    "crates/app",
+    "crates/seerr-api",
+]
+# The fuzz crate is its own workspace: it builds with nightly + libFuzzer
+# instrumentation that must never leak into the normal dev/test profiles.
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/packetinspector/jellybeam-macos"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"   # library code must not panic on recoverable paths
+
+[workspace.lints.rust]
+# cargo-fuzz builds set `--cfg fuzzing` (see the workspace-excluded fuzz/
+# crate and jellyfin-api's cfg(fuzzing)-gated re-export); declare it so
+# check-cfg doesn't flag the gate.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

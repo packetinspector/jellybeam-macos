@@ -1,0 +1,69 @@
+# Jellybeam dev test environment: a disposable Jellyfin server + synthetic media
+# corpus for exercising the macOS client against a real server.
+#
+# Usage: see dev/README.md and dev/server.sh (`dev/server.sh up`, etc).
+
+services:
+  jellyfin:
+    # Pinned to a specific current-stable release so the environment is
+    # reproducible. Bump deliberately; do not float on `latest`.
+    image: jellyfin/jellyfin:10.11.10
+    container_name: jellybeam-dev-jellyfin
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8096:8096"
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      # Synthetic corpus lives on the host (git-ignored) so it's easy to
+      # inspect, wipe, or regenerate without touching named volumes.
+      - ./media:/media:ro
+    environment:
+      # Keep the container off host networking; we only need port 8096.
+      - JELLYFIN_PublishedServerUrl=http://localhost:8096
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8096/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # Opt-in second server for testing against Jellyfin 12.0 (client support
+  # floor is 10.11 -- see dev/README.md "Jellyfin version").
+  # Behind the `v12` profile so it never starts from a plain
+  # `docker compose up` / `dev/server.sh up`; bring it up explicitly with
+  # `dev/server.sh 12-up`. Separate container, ports, and named volumes from
+  # the `jellyfin` service above so the two run side by side without
+  # touching each other's state.
+  jellyfin12:
+    # Docker Hub's 12.0 release line only publishes the
+    # `12.0` and `12` tags (no `12.0.0`) -- re-check with
+    # `docker manifest inspect jellyfin/jellyfin:12.0` before bumping this,
+    # in case that changes.
+    image: jellyfin/jellyfin:12.0
+    container_name: jellybeam-dev-jellyfin12
+    restart: unless-stopped
+    profiles: ["v12"]
+    ports:
+      - "127.0.0.1:8097:8096"
+    volumes:
+      - jellyfin12-config:/config
+      - jellyfin12-cache:/cache
+      # Same corpus as the pinned server, shared read-only in effect: both
+      # servers scan the same host files independently into their own
+      # (separate) library databases.
+      - ./media:/media:ro
+    environment:
+      - JELLYFIN_PublishedServerUrl=http://localhost:8097
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8096/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  jellyfin-config:
+  jellyfin-cache:
+  jellyfin12-config:
+  jellyfin12-cache:

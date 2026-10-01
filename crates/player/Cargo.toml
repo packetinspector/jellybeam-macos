@@ -1,0 +1,32 @@
+[package]
+name = "player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+# Locates the vendored libmpv build via its pkg-config file (see build.rs /
+# docs/BUILD.md); we don't need cflags (bindings are hand-written in src/sys.rs),
+# just the correct -L/-l and version check.
+pkg-config = "0.3"
+
+[dev-dependencies]
+# Latency benchmark (tests/latency_bench.rs, see LATENCY.md) only: authenticates against
+# the live dev Jellyfin server and resolves a real stream URL, exactly like
+# crates/jellyfin-core/tests/live_contract.rs. Not used by any non-`#[ignore]`
+# test, so this never touches the default `cargo test -p player` run.
+jellyfin-api = { path = "../jellyfin-api" }
+jellyfin-core = { path = "../jellyfin-core" }
+# latency_bench.rs's server-side transcode HLS-timing test only:
+# fetches the master/media playlists and first segment directly, no Player
+# involved. Same version/feature set as jellyfin-api's own reqwest dep.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[lints]
+workspace = true

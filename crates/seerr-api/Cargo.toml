@@ -1,0 +1,30 @@
+[package]
+name = "seerr-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "rt", "sync"] }
+# TLS choice: rustls (via ring), matching jellyfin-api's own client -- see
+# that crate's lib.rs module doc comment for the reasoning (no system
+# OpenSSL dependency, consistent behavior across dev/CI/notarized-release
+# builds).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2"
+# `seerr_home`'s concurrent row fan-out (`tokio::join!`) doesn't need this,
+# but `seerr_request_options`' per-instance profile/root-folder fetch
+# (`future::join_all`) and `seerr_my_requests`' bounded per-request detail
+# fetch (`stream::iter(..).buffered(..)`) do.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "rt", "test-util"] }
+
+[lints]
+workspace = true
