@@ -116,6 +116,24 @@ if ! skip_if_exists "$out"; then
       -c:a ac3 -b:a 192k -shortest "$out"
 fi
 
+# --- HDR10 brightness ladder: six neutral bars at known PQ luminance ---
+# Left to right 100, 203, 400, 1000, 2000, 4000 nits (10-bit limited-range
+# luma 509, 573, 636, 723, 789, 855; chroma neutral). With EDR engaged the
+# 203-nit bar matches the app's own white UI and every bar to its right is
+# visibly brighter, up to the display's headroom; tone-mapped to SDR, the
+# right-hand bars converge on white.
+out="$MEDIA/Movies/34-hevc10-hdr10-nits-ladder-aac.mkv"
+if ! skip_if_exists "$out"; then
+  echo "  -> $out (HDR10 luminance ladder)"
+  $FF -f lavfi -i "nullsrc=size=1920x1080:rate=24:duration=20" \
+      -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+      -vf "format=yuv420p10le,geq=lum='st(0,floor(X/320));if(eq(ld(0),0),509,if(eq(ld(0),1),573,if(eq(ld(0),2),636,if(eq(ld(0),3),723,if(eq(ld(0),4),789,855)))))':cb=512:cr=512" \
+      -c:v libx265 -preset ultrafast -crf 12 -pix_fmt yuv420p10le \
+      -x265-params "hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,1):max-cll=4000,1500" \
+      -bsf:v "hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9:video_full_range_flag=0" \
+      -c:a aac -b:a 64k -shortest "$out"
+fi
+
 # --- Embedded styled ASS subtitles ---
 out="$MEDIA/Movies/27-h264-ass-subs-aac.mkv"
 if ! skip_if_exists "$out"; then

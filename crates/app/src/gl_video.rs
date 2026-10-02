@@ -39,6 +39,10 @@
 //! driver: `setFrame`/`update`), with nothing else serializing the two.
 //! Apple's docs require `CGLLockContext`/`CGLUnlockContext` around every
 //! multi-threaded touch of a shared context; see `CglLock`'s doc comment.
+//!
+//! **HDR output.** On a Mac with an EDR-capable display the drawable is
+//! RGBA16F; HDR items render through `edr_gl::EdrPass` into EDR headroom
+//! the geometry driver tracks (crates/app/ARCHITECTURE.md "HDR output").
 
 #![allow(deprecated)] // NSOpenGL* is deprecated AppKit API; mpv has no Metal render backend.
 
@@ -53,16 +57,20 @@ use gpui::{App, Window, WindowBackgroundAppearance};
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSOpenGLContext, NSOpenGLPFAAccelerated, NSOpenGLPFAAlphaSize, NSOpenGLPFAColorSize,
-    NSOpenGLPFADepthSize, NSOpenGLPFADoubleBuffer, NSOpenGLPFAOpenGLProfile, NSOpenGLPixelFormat,
-    NSOpenGLProfileVersion3_2Core, NSView, NSWindow, NSWindowOrderingMode,
+    NSOpenGLContext, NSOpenGLPFAAccelerated, NSOpenGLPFAAlphaSize, NSOpenGLPFAColorFloat,
+    NSOpenGLPFAColorSize, NSOpenGLPFADepthSize, NSOpenGLPFADoubleBuffer, NSOpenGLPFAOpenGLProfile,
+    NSOpenGLPixelFormat, NSOpenGLProfileVersion3_2Core, NSScreen, NSView, NSWindow,
+    NSWindowOrderingMode,
 };
 use objc2_core_graphics::{CGColor, CGMutablePath};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::{kCAFillRuleEvenOdd, CAShapeLayer};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use player::Player;
+use player::{OutputTarget, Player, RenderTarget};
+
+use crate::edr::{self, ScreenHeadroom};
+use crate::edr_gl::{self, EdrPass};
 
 /// Fixed left inset for the sidebar (library views).
 pub(crate) const SIDEBAR_WIDTH: f64 = 240.0;
@@ -204,9 +212,68 @@ pub(crate) struct VideoLayer {
     /// until the next `Player::load`'s frames start arriving again. See
     /// `clear_to_black`'s doc comment for why this exists.
     clear_flag: Arc<AtomicBool>,
+    edr: Arc<EdrShared>,
+}
+
+/// HDR output state shared by the geometry driver (decides) and the render
+/// thread (renders through `EdrPass` while `active`).
+struct EdrShared {
+    /// The drawable is RGBA16F; fixed when the context is created.
+    float_surface: bool,
+    /// Render HDR frames through the encode pass.
+    active: AtomicBool,
+    /// The pass could not be built; HDR falls back to mpv's SDR tone mapping.
+    broken: AtomicBool,
+    /// Draw the current frame on the next tick even without an mpv update,
+    /// after the view or render path changed under a paused frame.
+    force_render: AtomicBool,
+    /// The video view carries the EDR request (`edr::should_request_edr`).
+    requested: AtomicBool,
+    /// Potential headroom of the window's screen at the last poll, as f64 bits.
+    screen_potential: std::sync::atomic::AtomicU64,
+    /// `edr::RangeHint` for the item being loaded, set just before `Player::load`.
+    hint: std::sync::atomic::AtomicU8,
+    /// The hint changed: the driver re-decides on its next tick, not its next poll.
+    hint_changed: AtomicBool,
+}
+
+/// Lets playback hand the video layer the server's range for the item it is
+/// about to load (`edr::RangeHint`).
+#[derive(Clone)]
+pub(crate) struct EdrHint(Arc<EdrShared>);
+
+impl EdrHint {
+    /// Call immediately before `Player::load`: the geometry driver applies
+    /// the matching target within one 16ms tick, ahead of mpv's first frame.
+    pub(crate) fn set(&self, hint: edr::RangeHint) {
+        self.0.hint.store(hint as u8, Ordering::Release);
+        self.0.hint_changed.store(true, Ordering::Release);
+    }
+}
+
+/// What the HDR output path is doing, for `JELLYBEAM_E2E`'s assertion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EdrStatus {
+    pub float_surface: bool,
+    pub requested: bool,
+    pub active: bool,
+    pub screen_potential: f64,
 }
 
 impl VideoLayer {
+    pub(crate) fn edr_hint(&self) -> EdrHint {
+        EdrHint(self.edr.clone())
+    }
+
+    pub(crate) fn edr_status(&self) -> EdrStatus {
+        EdrStatus {
+            float_surface: self.edr.float_surface,
+            requested: self.edr.requested.load(Ordering::Acquire),
+            active: self.edr.active.load(Ordering::Acquire),
+            screen_potential: f64::from_bits(self.edr.screen_potential.load(Ordering::Acquire)),
+        }
+    }
+
     /// The shared mpv player. Present for the layer's whole life; the field
     /// is only `take`n inside `Drop` (see the field's doc comment).
     pub(crate) fn player(&self) -> &Arc<Player> {
@@ -612,20 +679,7 @@ impl VideoLayer {
             .ok_or("content view has no window yet")?;
 
         let frame = video_frame(content_view.bounds(), LayerMode::FullscreenInWindow);
-        // `JellybeamVideoView`, not a plain `NSView` -- see its doc comment
-        // above (input-transparent to hit-testing). No overridden
-        // initializer, so the inherited `NSView` `initWithFrame:` is
-        // invoked directly on the subclass's allocation via `msg_send!`
-        // (the usual objc2 idiom for reusing a superclass's designated
-        // initializer unchanged); `into_super()` then gives back the same
-        // `Retained<NSView>` type this function already used everywhere
-        // else below -- the object's *runtime* class (and therefore its
-        // overridden `hitTest:`) is unaffected by that static Rust type.
-        let video_view: Retained<NSView> = unsafe {
-            let typed: Retained<JellybeamVideoView> =
-                msg_send![mtm.alloc::<JellybeamVideoView>(), initWithFrame: frame];
-            typed.into_super()
-        };
+        let video_view = new_video_view(mtm, frame, false);
         // Deliberately NOT an autoresizing mask: geometry is now
         // state-driven (Fullscreen-in-window vs. Miniplayer corner, see
         // `LayerMode`/`GeometryState`) and animated by the render thread's
@@ -638,23 +692,24 @@ impl VideoLayer {
         // overriding `drawInCGLContext:`, which objc2's safe class-wrapper
         // macros don't make easy to author from Rust.
 
-        #[rustfmt::skip]
-        let mut attribs: Vec<u32> = vec![
-            NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
-            NSOpenGLPFAAccelerated,
-            NSOpenGLPFADoubleBuffer,
-            NSOpenGLPFAColorSize, 24,
-            NSOpenGLPFAAlphaSize, 8,
-            NSOpenGLPFADepthSize, 24,
-            0,
-        ];
-        let attribs_ptr = NonNull::new(attribs.as_mut_ptr()).expect("attribs is non-empty");
-        // SAFETY: `attribs_ptr` is a valid, 0-terminated
-        // NSOpenGLPixelFormatAttribute array, alive for this call's duration.
-        let pixel_format: Retained<NSOpenGLPixelFormat> =
-            unsafe { NSOpenGLPixelFormat::initWithAttributes(mtm.alloc(), attribs_ptr) }.ok_or(
-                "no matching NSOpenGLPixelFormat (need an accelerated Core Profile >= 3.2 context)",
-            )?;
+        let max_potential = NSScreen::screens(mtm)
+            .iter()
+            .map(|screen| screen.maximumPotentialExtendedDynamicRangeColorComponentValue())
+            .fold(1.0, f64::max);
+        let want_float = edr::wants_float_surface(max_potential, view_edr_supported());
+        let (pixel_format, float_surface) = match want_float
+            .then(|| pixel_format(mtm, true))
+            .flatten()
+        {
+            Some(pf) => (pf, true),
+            None => (
+                pixel_format(mtm, false).ok_or(
+                    "no matching NSOpenGLPixelFormat (need an accelerated Core Profile >= 3.2 context)",
+                )?,
+                false,
+            ),
+        };
+        tracing::info!(max_potential, float_surface, "video surface format chosen");
 
         let context: Retained<NSOpenGLContext> =
             NSOpenGLContext::initWithFormat_shareContext(mtm.alloc(), &pixel_format, None)
@@ -706,6 +761,17 @@ impl VideoLayer {
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let clear_flag = Arc::new(AtomicBool::new(false));
+        let edr_shared = Arc::new(EdrShared {
+            float_surface,
+            active: AtomicBool::new(false),
+            broken: AtomicBool::new(false),
+            force_render: AtomicBool::new(false),
+            requested: AtomicBool::new(false),
+            screen_potential: std::sync::atomic::AtomicU64::new(1f64.to_bits()),
+            hint: std::sync::atomic::AtomicU8::new(edr::RangeHint::Unknown as u8),
+            hint_changed: AtomicBool::new(false),
+        });
+        let thread_edr = edr_shared.clone();
         let geometry = Arc::new(std::sync::Mutex::new(GeometryState {
             mode: LayerMode::FullscreenInWindow,
             last_frame: None,
@@ -723,6 +789,7 @@ impl VideoLayer {
                     thread_stop,
                     thread_render_size,
                     thread_clear_flag,
+                    thread_edr,
                     player_tx,
                 )
             })
@@ -735,15 +802,19 @@ impl VideoLayer {
             })??;
 
         spawn_geometry_driver(
-            video_view,
-            ns_window,
-            context_for_driver,
-            native_view_owned,
-            content_view,
-            backing_scale,
-            stop_flag.clone(),
-            geometry.clone(),
-            render_size,
+            GeometryDriver {
+                view: video_view,
+                window: ns_window,
+                context: context_for_driver,
+                native_view: native_view_owned,
+                content_view,
+                backing_scale,
+                stop: stop_flag.clone(),
+                geometry: geometry.clone(),
+                render_size,
+                player: Arc::downgrade(&player),
+                edr: edr_shared.clone(),
+            },
             cx,
         );
 
@@ -756,8 +827,92 @@ impl VideoLayer {
             render_thread: Some(render_thread),
             geometry,
             clear_flag,
+            edr: edr_shared,
         })
     }
+}
+
+/// A fresh `JellybeamVideoView`. `request_edr` must be decided before the
+/// GL context attaches: AppKit reads `wantsExtendedDynamicRangeOpenGLSurface`
+/// only when a view first receives its GL surface.
+fn new_video_view(mtm: MainThreadMarker, frame: NSRect, request_edr: bool) -> Retained<NSView> {
+    // `JellybeamVideoView`, not a plain `NSView` -- see its doc comment
+    // above (input-transparent to hit-testing). No overridden initializer,
+    // so the inherited `initWithFrame:` is invoked on the subclass's
+    // allocation; the runtime class (and its `hitTest:`) is unaffected by
+    // `into_super()`'s static type.
+    let view: Retained<NSView> = unsafe {
+        let typed: Retained<JellybeamVideoView> =
+            msg_send![mtm.alloc::<JellybeamVideoView>(), initWithFrame: frame];
+        typed.into_super()
+    };
+    if request_edr && view_edr_supported() {
+        // SAFETY: the selector exists (checked above) and takes one BOOL.
+        unsafe {
+            let _: () = msg_send![&*view, setWantsExtendedDynamicRangeOpenGLSurface: true];
+        }
+    }
+    view
+}
+
+/// `-[NSView setWantsExtendedDynamicRangeOpenGLSurface:]` (macOS 10.11,
+/// deprecated but present) is probed at runtime so a removal degrades to SDR.
+fn view_edr_supported() -> bool {
+    <NSView as objc2::ClassType>::class()
+        .responds_to(objc2::sel!(setWantsExtendedDynamicRangeOpenGLSurface:))
+}
+
+/// Core Profile 3.2 double-buffered pixel format: RGBA16F when `float`
+/// (EDR needs a float drawable), else today's RGBA8.
+fn pixel_format(mtm: MainThreadMarker, float: bool) -> Option<Retained<NSOpenGLPixelFormat>> {
+    #[rustfmt::skip]
+    let mut attribs: Vec<u32> = vec![
+        NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
+        NSOpenGLPFAAccelerated,
+        NSOpenGLPFADoubleBuffer,
+        NSOpenGLPFADepthSize, 24,
+    ];
+    if float {
+        attribs.extend([
+            NSOpenGLPFAColorFloat,
+            NSOpenGLPFAColorSize,
+            64,
+            NSOpenGLPFAAlphaSize,
+            16,
+        ]);
+    } else {
+        attribs.extend([NSOpenGLPFAColorSize, 24, NSOpenGLPFAAlphaSize, 8]);
+    }
+    attribs.push(0);
+    let attribs_ptr = NonNull::new(attribs.as_mut_ptr()).expect("attribs is non-empty");
+    // SAFETY: `attribs_ptr` is a valid, 0-terminated
+    // NSOpenGLPixelFormatAttribute array, alive for this call's duration.
+    unsafe { NSOpenGLPixelFormat::initWithAttributes(mtm.alloc(), attribs_ptr) }
+}
+
+unsafe extern "C" {
+    fn CGColorSpaceIsWideGamutRGB(space: *const c_void) -> bool;
+}
+
+/// The window's screen EDR state, or `None` while it is off-screen.
+fn screen_headroom(window: &NSWindow) -> Option<ScreenHeadroom> {
+    let screen = window.screen()?;
+    let wide_gamut = screen.colorSpace().is_some_and(|cs| {
+        // `-[NSColorSpace CGColorSpace]` through the raw binding for the same
+        // encoding reason as `cgl_context_obj`; the ref is borrowed, not owned.
+        let sel = objc2::runtime::Sel::register(c"CGColorSpace");
+        let receiver = Retained::as_ptr(&cs).cast_mut().cast();
+        // SAFETY: zero-argument method returning a CGColorSpaceRef (or
+        // NULL) that `cs` keeps alive for this call.
+        let cg = unsafe { objc_msgSend(receiver, sel) };
+        // SAFETY: `cg` is a live CGColorSpaceRef when non-null.
+        !cg.is_null() && unsafe { CGColorSpaceIsWideGamutRGB(cg) }
+    });
+    Some(ScreenHeadroom {
+        current: screen.maximumExtendedDynamicRangeColorComponentValue(),
+        potential: screen.maximumPotentialExtendedDynamicRangeColorComponentValue(),
+        wide_gamut,
+    })
 }
 
 impl Drop for VideoLayer {
@@ -844,6 +999,7 @@ fn run_render_thread(
     stop: Arc<AtomicBool>,
     render_size: Arc<RenderSize>,
     clear_flag: Arc<AtomicBool>,
+    edr: Arc<EdrShared>,
     player_tx: std::sync::mpsc::Sender<Result<Arc<Player>, String>>,
 ) {
     // SAFETY: this pointer was produced by `Retained::into_raw` on the main
@@ -871,6 +1027,8 @@ fn run_render_thread(
     tracing::info!("mpv render context created; video render thread running");
 
     let frame_budget = Duration::from_millis(16); // ~60Hz poll, matches S1's render thread.
+                                                  // Built on the first HDR frame; GL objects need this thread's context.
+    let mut edr_pass: Option<EdrPass> = None;
 
     while !stop.load(Ordering::Acquire) {
         let tick_start = std::time::Instant::now();
@@ -886,10 +1044,18 @@ fn run_render_thread(
                 glClear(GL_COLOR_BUFFER_BIT);
             }
             context.flushBuffer();
-        } else if player.needs_render() {
+        } else if player.needs_render() | edr.force_render.swap(false, Ordering::AcqRel) {
             let (w, h) = render_size.load();
             let _lock = CglLock::acquire(cgl_ctx);
-            match player.render(0, w, h) {
+            let result = if edr.active.load(Ordering::Acquire) {
+                render_edr(&player, &mut edr_pass, &edr, w, h)
+            } else {
+                if let Some(pass) = edr_pass.as_mut() {
+                    pass.release_target();
+                }
+                player.render(0, w, h).map_err(|e| e.to_string())
+            };
+            match result {
                 Ok(()) => {
                     context.flushBuffer();
                     player.report_swap();
@@ -906,9 +1072,54 @@ fn run_render_thread(
 
     {
         let _lock = CglLock::acquire(cgl_ctx);
+        drop(edr_pass);
         NSOpenGLContext::clearCurrentContext();
     }
     tracing::info!("video render thread stopped");
+}
+
+/// One HDR frame: mpv renders linear light into the pass's RGBA16F target
+/// with the drawable's flip, then the pass encodes it into the drawable. A
+/// pass that cannot be built marks EDR broken so the driver reverts to SDR.
+fn render_edr(
+    player: &Player,
+    edr_pass: &mut Option<EdrPass>,
+    edr: &EdrShared,
+    w: i32,
+    h: i32,
+) -> Result<(), String> {
+    if edr_pass.is_none() {
+        match EdrPass::new() {
+            Ok(pass) => *edr_pass = Some(pass),
+            Err(e) => {
+                edr.broken.store(true, Ordering::Release);
+                edr.active.store(false, Ordering::Release);
+                tracing::warn!(error = %e, "EDR pass unavailable; HDR stays tone-mapped to SDR");
+                return player.render(0, w, h).map_err(|e| e.to_string());
+            }
+        }
+    }
+    let pass = edr_pass.as_mut().expect("built above");
+    let fbo = match pass.target_fbo(w, h) {
+        Ok(fbo) => fbo,
+        Err(e) => {
+            edr.broken.store(true, Ordering::Release);
+            edr.active.store(false, Ordering::Release);
+            tracing::warn!(error = %e, "EDR target unavailable; HDR stays tone-mapped to SDR");
+            return player.render(0, w, h).map_err(|e| e.to_string());
+        }
+    };
+    player
+        .render_to(RenderTarget {
+            fbo,
+            width: w,
+            height: h,
+            flip_y: true,
+            internal_format: edr_gl::INTERMEDIATE_FORMAT,
+        })
+        .map_err(|e| e.to_string())?;
+    pass.encode_into(0, w, h);
+    Ok(())
 }
 
 /// B1 fix: drives all video `NSView`/`NSWindow`/`NSOpenGLContext` geometry
@@ -928,8 +1139,8 @@ fn run_render_thread(
 /// intentionally detached (like every other app-lifetime GPUI task in this
 /// codebase, e.g. `main.rs`'s `spawn_player_events_task`) rather than held
 /// onto, since nothing needs to await its completion.
-#[allow(clippy::too_many_arguments)] // plain data parameters, no natural grouping.
-fn spawn_geometry_driver(
+/// Everything the geometry driver owns; see `spawn_geometry_driver`.
+struct GeometryDriver {
     view: Retained<NSView>,
     window: Retained<NSWindow>,
     context: Retained<NSOpenGLContext>,
@@ -941,8 +1152,26 @@ fn spawn_geometry_driver(
     stop: Arc<AtomicBool>,
     geometry: Arc<std::sync::Mutex<GeometryState>>,
     render_size: Arc<RenderSize>,
-    cx: &mut App,
-) {
+    /// Weak: `VideoLayer::drop` must hold the last strong reference so
+    /// mpv's render context is freed with its GL context current.
+    player: std::sync::Weak<Player>,
+    edr: Arc<EdrShared>,
+}
+
+fn spawn_geometry_driver(driver: GeometryDriver, cx: &mut App) {
+    let GeometryDriver {
+        mut view,
+        window,
+        context,
+        native_view,
+        content_view,
+        backing_scale,
+        stop,
+        geometry,
+        render_size,
+        player,
+        edr,
+    } = driver;
     const GEOMETRY_TICK: Duration = Duration::from_millis(16);
 
     let cgl_ctx = cgl_context_obj(&context);
@@ -968,6 +1197,10 @@ fn spawn_geometry_driver(
         // every tick.
         let mut mask_layer: Option<Retained<CAShapeLayer>> = None;
         let mut mask_applied = false;
+        // HDR output (crates/app/ARCHITECTURE.md "HDR output"): the target
+        // last handed to mpv, re-decided every `edr::EDR_POLL`.
+        let mut applied_target = OutputTarget::Sdr;
+        let mut last_edr_poll: Option<std::time::Instant> = None;
         while !stop.load(Ordering::Acquire) {
             let tick_start = std::time::Instant::now();
 
@@ -1094,6 +1327,52 @@ fn spawn_geometry_driver(
                 mask_applied = false;
             }
 
+            // The upgraded `Arc` lives only inside this block, never across
+            // the tick's await, so teardown always holds the last reference.
+            let hinted = edr.hint_changed.swap(false, Ordering::AcqRel);
+            let due = edr.float_surface
+                && (hinted || last_edr_poll.is_none_or(|t| t.elapsed() >= edr::EDR_POLL));
+            if let Some(player) = due.then(|| player.upgrade()).flatten() {
+                last_edr_poll = Some(tick_start);
+                let usable = !edr.broken.load(Ordering::Acquire);
+                let decoded = player.video_transfer();
+                let hint = edr::RangeHint::from_u8(edr.hint.load(Ordering::Acquire));
+                let transfer = edr::effective_transfer(decoded.as_deref(), hint);
+                let screen = screen_headroom(&window);
+                if let Some(screen) = screen {
+                    edr.screen_potential
+                        .store(screen.potential.to_bits(), Ordering::Release);
+                }
+                let target = edr::output_target(usable, transfer, screen);
+                if target != applied_target {
+                    if edr::should_request_edr(edr.requested.load(Ordering::Acquire), &target) {
+                        view = swap_in_edr_view(
+                            mtm,
+                            &view,
+                            &content_view,
+                            &native_view,
+                            &context,
+                            cgl_ctx,
+                        );
+                        edr.requested.store(true, Ordering::Release);
+                    }
+                    match player.set_output_target(&target) {
+                        Ok(()) => {
+                            tracing::info!(?target, "video output target");
+                            applied_target = target;
+                            edr.active.store(
+                                matches!(target, OutputTarget::ExtendedLinear { .. }),
+                                Ordering::Release,
+                            );
+                            edr.force_render.store(true, Ordering::Release);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "setting the video output target failed");
+                        }
+                    }
+                }
+            }
+
             let bounds = view.bounds();
             let w = (bounds.size.width * backing_scale).max(1.0) as i32;
             let h = (bounds.size.height * backing_scale).max(1.0) as i32;
@@ -1128,4 +1407,31 @@ fn spawn_geometry_driver(
         }
     })
     .detach();
+}
+
+/// Replaces the video view with one carrying the EDR request, at the same
+/// frame and z-order, and moves the GL context onto it (`new_video_view`:
+/// AppKit only reads the request when a view first gets its GL surface).
+fn swap_in_edr_view(
+    mtm: MainThreadMarker,
+    old: &NSView,
+    content_view: &NSView,
+    native_view: &NSView,
+    context: &NSOpenGLContext,
+    cgl_ctx: CglContextObj,
+) -> Retained<NSView> {
+    let fresh = new_video_view(mtm, old.frame(), true);
+    content_view.addSubview_positioned_relativeTo(
+        &fresh,
+        NSWindowOrderingMode::Below,
+        Some(native_view),
+    );
+    {
+        let _lock = CglLock::acquire(cgl_ctx);
+        context.setView(Some(&fresh), mtm);
+        context.update(mtm);
+    }
+    old.removeFromSuperview();
+    tracing::info!("video view now requests EDR");
+    fresh
 }

@@ -11,6 +11,9 @@ use jellyfin_core::{PlaybackDecision, ReportContext, ReportingSession};
 use media_cache::Mirror;
 use player::{LoadRequest, Player};
 
+use crate::edr::RangeHint;
+use crate::gl_video::EdrHint;
+
 /// Wall-clock checkpoints for `play_item entry -> PlaybackInfo response ->
 /// decide -> Player::load`, measured from `t0`. The remaining checkpoints
 /// (mpv `FileLoaded`/first `Position`) happen on mpv's event thread, bridged
@@ -93,6 +96,22 @@ pub(crate) struct PlaybackStarted {
 /// item the user has already left.
 pub(crate) const SUPERSEDED: &str = "playback flow superseded before load";
 
+/// The range to pre-arm for `decision` (crates/app/ARCHITECTURE.md "HDR
+/// output"): a Direct Play source's video stream as the server reports it. A
+/// transcode may be tone-mapped server-side, so mpv's decoded transfer decides.
+fn range_hint(decision: &PlaybackDecision) -> RangeHint {
+    match decision {
+        PlaybackDecision::DirectPlay { source, .. } => RangeHint::from_range_type(
+            source
+                .media_streams
+                .iter()
+                .find(|s| s.type_ == Some(jellyfin_api::models::MediaStreamType::Video))
+                .and_then(|s| s.video_range_type.as_ref()),
+        ),
+        PlaybackDecision::Transcode { .. } => RangeHint::Unknown,
+    }
+}
+
 /// Fire-and-forget: spawns the PlaybackInfo -> load -> report-start flow on
 /// `runtime`, delivering the outcome through `result_tx` (bridged back into
 /// GPUI via `cx.spawn` in `root.rs`). `bitrate_mode` is the server's quality
@@ -108,6 +127,7 @@ pub(crate) fn start_playback(
     client: JellyfinClient,
     mirror: Mirror,
     player: Arc<Player>,
+    edr_hint: EdrHint,
     item_id: String,
     item_name: String,
     bitrate_mode: crate::settings::BitrateMode,
@@ -131,6 +151,7 @@ pub(crate) fn start_playback(
             client,
             mirror,
             player,
+            edr_hint,
             item_id,
             item_name,
             bitrate_mode,
@@ -186,6 +207,7 @@ async fn run(
     client: JellyfinClient,
     mirror: Mirror,
     player: Arc<Player>,
+    edr_hint: EdrHint,
     item_id: String,
     item_name: String,
     bitrate_mode: crate::settings::BitrateMode,
@@ -308,7 +330,9 @@ async fn run(
     // and there is none between here and `player.load()`. Re-read the shared
     // generation immediately before touching the shared `Arc<Player>` so a
     // superseded flow can never reload/hijack mpv behind the user's back.
+    let hint = range_hint(&decision);
     match load_if_current(&playback_generation, my_generation, || {
+        edr_hint.set(hint);
         player
             .load(LoadRequest {
                 url,
@@ -562,6 +586,7 @@ pub(crate) fn start_preload(
     client: JellyfinClient,
     mirror: Mirror,
     player: Arc<Player>,
+    edr_hint: EdrHint,
     item_id: String,
     item_name: String,
     bitrate_mode: crate::settings::BitrateMode,
@@ -574,6 +599,7 @@ pub(crate) fn start_preload(
             client,
             mirror,
             player,
+            edr_hint,
             item_id,
             item_name,
             bitrate_mode,
@@ -596,6 +622,7 @@ async fn run_preload(
     client: JellyfinClient,
     mirror: Mirror,
     player: Arc<Player>,
+    edr_hint: EdrHint,
     item_id: String,
     item_name: String,
     bitrate_mode: crate::settings::BitrateMode,
@@ -645,7 +672,9 @@ async fn run_preload(
 
     // Same immediately-before-load gate as `run()` -- a click or a
     // newer preload may have superseded this flow during the awaits above.
+    let hint = range_hint(&decision);
     load_if_current(&playback_generation, my_generation, || {
+        edr_hint.set(hint);
         player
             .load(LoadRequest {
                 url: url.clone(),

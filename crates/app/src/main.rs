@@ -9,6 +9,8 @@ mod channel_browse;
 mod detail;
 mod discover;
 mod e2e;
+mod edr;
+mod edr_gl;
 mod focus_grid;
 mod gl_video;
 mod grid;

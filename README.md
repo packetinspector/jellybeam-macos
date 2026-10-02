@@ -4,7 +4,7 @@
 
 ### Built in Rust. Native to Apple Silicon. Really, really fast.
 
-<a href="https://github.com/packetinspector/jellybeam-macos/releases/latest"><img src="https://img.shields.io/badge/download-Jellybeam.app-A8CB6B?style=flat-square&labelColor=14100D" alt="Download Jellybeam.app"></a> <img src="https://img.shields.io/badge/macOS-13%2B%20Apple%20Silicon-1D1814?style=flat-square&labelColor=14100D" alt="macOS 13+, Apple Silicon"> <img src="https://img.shields.io/badge/Jellyfin-10.11%20to%2012.x-1D1814?style=flat-square&labelColor=14100D" alt="Jellyfin 10.11 to 12.x"> <img src="https://img.shields.io/badge/100%25-Rust-1D1814?style=flat-square&logo=rust&logoColor=F7E9CE&labelColor=14100D" alt="100% Rust"> <img src="https://img.shields.io/badge/UI-GPUI-1D1814?style=flat-square&labelColor=14100D" alt="GPUI"> <img src="https://img.shields.io/badge/licence-GPL--3.0-1D1814?style=flat-square&labelColor=14100D" alt="GPL-3.0">
+<a href="https://github.com/packetinspector/jellybeam-macos/releases/latest"><img src="https://img.shields.io/badge/download-Jellybeam.app-A8CB6B?style=flat-square&labelColor=14100D" alt="Download Jellybeam.app"></a> <img src="https://img.shields.io/badge/macOS-11%2B%20Apple%20Silicon-1D1814?style=flat-square&labelColor=14100D" alt="macOS 11+, Apple Silicon"> <img src="https://img.shields.io/badge/Jellyfin-10.11%20to%2012.x-1D1814?style=flat-square&labelColor=14100D" alt="Jellyfin 10.11 to 12.x"> <img src="https://img.shields.io/badge/100%25-Rust-1D1814?style=flat-square&logo=rust&logoColor=F7E9CE&labelColor=14100D" alt="100% Rust"> <img src="https://img.shields.io/badge/UI-GPUI-1D1814?style=flat-square&labelColor=14100D" alt="GPUI"> <img src="https://img.shields.io/badge/licence-GPL--3.0-1D1814?style=flat-square&labelColor=14100D" alt="GPL-3.0">
 
 </div>
 
@@ -19,7 +19,7 @@ A Jellyfin client for the Mac with no web view inside it. The interface is Rust 
 - **Built for fast browsing.** Cached home shelves, library grids and search use a local SQLite mirror. Performance instrumentation and budgets cover launch, navigation, search and scrolling; results depend on the Mac and library.
 - **Browse from the local mirror.** Home, grids, seasons, search, sort and filter use cached metadata. Background sync and WebSocket updates keep it current. Initial sync, plugin channels and Discover need the server.
 - **Direct Play as far as it goes.** HEVC 10-bit 4K, AV1, VP9 and ProRes through mpv, with VideoToolbox where the hardware supports the stream and software decoding otherwise. TrueHD, DTS, AC3, E-AC3, FLAC and Opus decoded locally. The device profile tells the server what the Mac can really play, so it stops transcoding files that never needed it.
-- **HDR that lands on the display.** HDR10 and HLG tone-mapped into macOS EDR headroom. XDR displays get real HDR.
+- **HDR that lands on the display.** HDR10 and HLG tone-mapped into the screen's macOS EDR headroom, tracking brightness as it changes. XDR displays get real HDR; SDR displays get a clean SDR tone map.
 - **Subtitles done properly.** ASS/SSA through libass, PGS, SRT and VTT, embedded or sidecar, composited on the GPU, with style overrides for the ones that need them.
 - **Browse while it plays.** The video is a node in the scene, not a window. Escape steps it down a layer at a time, from fullscreen to a miniplayer in the corner, while you look for the next thing.
 - **Seerr is built in.** Connect Jellyseerr or Overseerr once and Discover appears in the sidebar: trending, upcoming, search, request.
@@ -79,7 +79,7 @@ Releases are not yet notarized by Apple, so macOS blocks the first launch. Open 
 xattr -dr com.apple.quarantine /Applications/Jellybeam.app
 ```
 
-Requirements: an Apple Silicon Mac on macOS 13 or later, and a Jellyfin server on 10.11 or newer. Updates are installed manually from Releases; the About window links there.
+Requirements: an Apple Silicon Mac on macOS 11 or later, and a Jellyfin server on 10.11 or newer. Updates are installed manually from Releases; the About window links there.
 
 ## Build it yourself
 

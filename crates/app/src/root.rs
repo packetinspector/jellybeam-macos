@@ -2995,6 +2995,10 @@ impl Root {
         let is_fullscreen = window.is_fullscreen();
 
         let viewport = window.viewport_size();
+        let info_open = self
+            .main_state()
+            .and_then(|state| state.player_ui.as_ref())
+            .is_some_and(|ui| ui.info_overlay);
         // Sampled fresh every render (cheap mpv property reads).
         let live_info = crate::player_ui::PlayerLiveInfo {
             hwdec: self.video.player().hwdec_current(),
@@ -3004,6 +3008,18 @@ impl Root {
             video_params: self.video.player().video_params(),
             frame_drops: self.video.player().frame_drop_stats(),
             cache: self.video.player().cache_state(),
+            hdr_output: info_open.then(|| {
+                let player = self.video.player();
+                let applied = player.output_target_applied();
+                let status = self.video.edr_status();
+                crate::edr::output_readout(
+                    player.video_transfer().as_deref(),
+                    applied.trc.as_deref(),
+                    applied.peak.as_deref().and_then(|p| p.parse().ok()),
+                    status.float_surface,
+                    status.screen_potential,
+                )
+            }),
         };
 
         let Some(state) = self.main_state() else {

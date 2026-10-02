@@ -81,7 +81,9 @@ rail below 900px) or `Hidden` (OS fullscreen or fullscreen playback).
 | `trickplay.rs` | Trickplay sprite fetch, decode and crop for scrubber previews. |
 | `playback.rs` | `start_playback`/`start_preload` tokio flows; `PlaybackStarted`; load stages; diagnostic log tasks. |
 | `player_ui.rs` | `PlayerUiState` plus every OSD, Miniplayer, picker, info overlay, toast, skip pill and next-episode card renderer. |
-| `gl_video.rs` | `VideoLayer`: mpv NSView embedding, GL render thread, geometry driver, Miniplayer mask. |
+| `gl_video.rs` | `VideoLayer`: mpv NSView embedding, GL render thread, geometry driver, Miniplayer mask, HDR output wiring. |
+| `edr.rs` | HDR output decisions: float surface, EDR target, headroom quantization. Pure functions. |
+| `edr_gl.rs` | `EdrPass`: the RGBA16F intermediate and extended-sRGB encode shader for HDR frames. |
 | `now_playing.rs` | `MPNowPlayingInfoCenter` publishing and `MPRemoteCommandCenter` commands. |
 | `option_speed_hold.rs` | Native `flagsChanged` monitor: right Option 2x, left Option 0.5x while held. |
 | `power.rs` | `DisplaySleepGuard`: IOKit display-sleep assertion during playback. |
@@ -220,6 +222,53 @@ GPUI's pixels inside the rect and the video view shows through. The mask
 lifts while the pointer hovers the Miniplayer (`set_miniplayer_hovering`)
 so the hover controls painted there stay visible. Drops snap to the
 nearest corner (`drop_miniplayer`).
+
+**HDR output.** At startup, if any attached screen reports
+`maximumPotentialExtendedDynamicRangeColorComponentValue` above 1.0, the
+GL drawable is RGBA16F (`NSOpenGLPFAColorFloat`, 64-bit colour); otherwise,
+or if that format is unavailable, it is RGBA8 as on any SDR Mac. The
+format is fixed for the context's life, and a half-float drawable doubles
+present bandwidth, so SDR-only Macs never pay for it. Every 250ms
+(`edr::EDR_POLL`) the geometry driver reads the playing transfer
+(`video-params/gamma`) and the window screen's headroom, and
+`edr::output_target` picks mpv's colour target.
+
+Before mpv has decoded a frame, the transfer comes from the server:
+`playback.rs` sets `edr::RangeHint` (the Direct Play source's
+`VideoRangeType`; a transcode gets none) immediately before both
+`Player::load` calls, the real start and the dark preload, and the driver
+re-decides on its next 16ms tick rather than its next poll. The first
+frame therefore renders in the right range, so neither SDR nor HDR titles
+switch target mid-play; mpv's decoded transfer overrides the hint once it
+exists (`edr::effective_transfer`). The target is:
+
+- PQ or HLG content on a float drawable whose screen has EDR potential:
+  `target-trc=linear`, `target-prim=display-p3` (wide-gamut screen) or
+  `bt.709`, and `target-peak` = 203 nits × current headroom
+  (`maximumExtendedDynamicRangeColorComponentValue`, clamped to the
+  potential and floored to 1/8 stop). 203 nits is mpv's reference white,
+  so linear 1.0 lands on the display's SDR white and highlights use the
+  headroom above it.
+- Anything else: `auto` on all three, mpv's default SDR path, rendered
+  straight to the drawable as on an SDR Mac.
+
+mpv renders through vo_gpu's renderer, whose non-linear output transfers
+clamp at 1.0, so linear is the only way to carry values above SDR white.
+The compositor reads an untagged float GL surface as display-referred,
+sRGB-encoded values, so HDR frames go to an RGBA16F intermediate
+(`mpv_opengl_fbo.internal_format = GL_RGBA16F`, same flip as the
+drawable) and `edr_gl::EdrPass` writes them to the drawable through the
+sRGB curve continued past 1.0. Subtitles ride the same pass.
+
+AppKit only honours `wantsExtendedDynamicRangeOpenGLSurface` when a view
+first receives its GL surface, and the request raises display power, so
+the video view starts without it. The first HDR item swaps in a fresh
+`JellybeamVideoView` carrying the request, at the same frame and
+z-order, and moves the context onto it; the request then stays for the
+process. Headroom ramps up over about two seconds after that, and the poll
+follows it, the brightness slider, and moves between screens. Both APIs
+exist on macOS 11 (10.11 and 10.15); the view selector is probed with
+`respondsToSelector`, and its absence keeps the RGBA8 path.
 
 **OSD hit geometry is computed, not measured.** GPUI 0.2.2 has no
 mid-render query for committed element bounds. `player_ui.rs::bar_frac`

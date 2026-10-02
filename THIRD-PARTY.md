@@ -23,7 +23,8 @@ GPL, which is what makes the app as a whole GPL-3.0-or-later.
 
 ### Leaf libraries the media stack links
 
-Installed from Homebrew for the build and relocated into the bundle.
+Built from the pinned source releases in `scripts/build-vendor.sh` and
+copied into the bundle. zlib, bzip2 and iconv are the copies in macOS.
 
 | Library | Licence |
 |---|---|
@@ -33,11 +34,7 @@ Installed from Homebrew for the build and relocated into the bundle.
 | Little-CMS 2 | MIT |
 | uchardet | MPL-1.1 / GPL-2.0-or-later / LGPL-2.1-or-later |
 | libunibreak | Zlib |
-| GLib and libintl (gettext) | LGPL-2.1-or-later |
-| graphite2 | LGPL-2.1-or-later / MPL-1.1 / GPL-2.0-or-later |
-| PCRE2 | BSD-3-Clause |
 | libpng | PNG Reference Library License v2 |
-| zlib | Zlib |
 
 ## Fonts
 

@@ -43,7 +43,7 @@ everything:
 |---|---|
 | H.264, **HEVC/x265 8+10-bit (4K)**, ProRes, VP9 | VideoToolbox **hardware decode**, all Apple Silicon |
 | AV1 | Hardware on M3+; dav1d NEON software decode on M1/M2 (handles 4K) |
-| **HDR10 / HLG** | Yes — mpv tone-maps into macOS EDR headroom (XDR displays get real HDR) |
+| **HDR10 / HLG** | Yes — on an EDR-capable display mpv tone-maps into the screen's current EDR headroom (XDR displays get real HDR); elsewhere it tone-maps to SDR |
 | Dolby Vision | Profile 8 plays; Profile 5 depends on upstream mpv/libplacebo support |
 | **AC3 / E-AC3**, DTS, TrueHD, AAC, FLAC, Opus | ffmpeg software decode, multichannel out via CoreAudio |
 | MKV, MP4, TS, AVI, WebM… | All — ffmpeg demuxers |
@@ -57,10 +57,13 @@ corpus (`crates/jellyfin-core/tests/live_contract.rs`).
 ### Embedding
 
 libmpv's render API is OpenGL-only for embedders. The app renders through
-render-API GL → FBO → a `CALayer` the app owns, with EDR
-enabled (`wantsExtendedDynamicRangeContent`). Deprecated but working; all
-render glue is isolated in one module (`crates/app/src/gl_video.rs`) so it
-can move when mpv grows a Vulkan/Metal embedder path.
+the render API into an `NSOpenGLContext` attached to an `NSView` it owns.
+On a Mac with an EDR-capable display that drawable is 16-bit float, and HDR
+items render as extended-range linear light, encoded for the compositor
+and shown with `wantsExtendedDynamicRangeOpenGLSurface` (details in
+`crates/app/ARCHITECTURE.md`, "HDR output"). Deprecated but working; all
+render glue is isolated in `crates/app/src/gl_video.rs` and its `edr*`
+helpers so it can move when mpv grows a Vulkan/Metal embedder path.
 
 ## 3. UI stack: GPUI, pure Rust
 

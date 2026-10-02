@@ -75,10 +75,11 @@ the bundle run locally before every release.
   `THIRD-PARTY.md` is an inventory, not the complete set of notices.
 - Provide the corresponding source required by the distributed components'
   licenses, including native-library pins, build scripts and the exact
-  Homebrew leaf-library versions/sources. A passing cargo-deny license
+  leaf-library source releases. A passing cargo-deny license
   check covers Rust license policy, not these distribution materials.
 - Test the quarantined download on a Mac without Homebrew, Xcode or the
-  vendor prefix. Validate macOS 13 support on that OS before claiming it.
+  vendor prefix, on the oldest macOS the bundle claims
+  (`LSMinimumSystemVersion`) as well as the newest.
 - Check playback, track selection, subtitles, seeking, resume, account
   switching, miniplayer, media keys, HDR and multiple displays in the real
   app. Test text entry with the intended keyboard layouts; the current

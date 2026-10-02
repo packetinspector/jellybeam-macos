@@ -542,6 +542,8 @@ async fn run(
         ));
     }
 
+    assert_hdr_output(root, cx).await?;
+
     // --- OSD auto-hide / reactivate (docs/UX-SPEC.md §3) -------------------------
     // The 10s idle wait above already gave the 3s idle timeout plenty of
     // room to fire with no synthetic activity in between -- confirm it did.
@@ -3629,4 +3631,62 @@ async fn poll_until_found<T>(
             .timer(Duration::from_millis(200))
             .await;
     }
+}
+
+/// crates/app/ARCHITECTURE.md "HDR output": the HDR10 corpus item engages the
+/// extended-range linear target when the surface is float and the window's
+/// screen has EDR potential, and leaves mpv's SDR defaults otherwise, so the
+/// check holds on any display.
+async fn assert_hdr_output(root: &Entity<Root>, cx: &mut AsyncApp) -> Result<(), String> {
+    let transfer = root
+        .read_with(cx, |root, _cx| root.video.player().video_transfer())
+        .map_err(|e| e.to_string())?;
+    if transfer.as_deref() != Some("pq") {
+        return Err(format!(
+            "expected the HDR10 corpus item to decode with transfer \"pq\", got {transfer:?}"
+        ));
+    }
+    // Three driver polls (`edr::EDR_POLL`) settle the target and the screen read.
+    cx.background_executor()
+        .timer(crate::edr::EDR_POLL * 3)
+        .await;
+    let status = root
+        .read_with(cx, |root, _cx| root.video.edr_status())
+        .map_err(|e| e.to_string())?;
+    let expect_edr = status.float_surface && status.screen_potential > 1.0;
+    let wanted = if expect_edr { "linear" } else { "auto" };
+    poll_until(
+        root,
+        cx,
+        Duration::from_secs(5),
+        &format!("mpv target-trc to read \"{wanted}\" (EDR expected: {expect_edr})"),
+        |root| {
+            root.video.player().output_target_applied().trc.as_deref() == Some(wanted)
+                && root.video.edr_status().active == expect_edr
+        },
+    )
+    .await?;
+    let (applied, status) = root
+        .read_with(cx, |root, _cx| {
+            (
+                root.video.player().output_target_applied(),
+                root.video.edr_status(),
+            )
+        })
+        .map_err(|e| e.to_string())?;
+    tracing::info!(?applied, ?status, "JELLYBEAM_E2E: HDR output target");
+    if expect_edr {
+        let peak: f64 = applied
+            .peak
+            .as_deref()
+            .and_then(|p| p.parse().ok())
+            .ok_or_else(|| format!("target-peak should be numeric under EDR, got {applied:?}"))?;
+        if peak < player::REFERENCE_WHITE_NITS || !status.requested {
+            return Err(format!(
+                "EDR target should request EDR and peak at or above reference white: \
+                 {applied:?} {status:?}"
+            ));
+        }
+    }
+    Ok(())
 }

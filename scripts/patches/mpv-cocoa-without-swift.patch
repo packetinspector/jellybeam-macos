@@ -1,0 +1,78 @@
+diff --git a/input/input.c b/input/input.c
+index 412c6db..b6da4e5 100644
+--- a/input/input.c
++++ b/input/input.c
+@@ -1700,7 +1700,7 @@ static void reload_opts(struct input_ctx *ictx, bool shutdown)
+ {
+     m_config_cache_update(ictx->opts_cache);
+ 
+-#if HAVE_COCOA
++#if HAVE_COCOA && HAVE_SWIFT
+     struct input_opts *opts = ictx->opts;
+ 
+     if (ictx->using_cocoa_media_keys != (opts->use_media_keys && !shutdown)) {
+diff --git a/player/clipboard/clipboard-mac.m b/player/clipboard/clipboard-mac.m
+index a753517..5a863eb 100644
+--- a/player/clipboard/clipboard-mac.m
++++ b/player/clipboard/clipboard-mac.m
+@@ -15,7 +15,10 @@
+  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "config.h"
+ #include "clipboard.h"
++
++#if HAVE_SWIFT
+ #include "osdep/mac/swift.h"
+ 
+ struct clipboard_mac_priv {
+@@ -57,3 +60,5 @@ static int set_data(struct clipboard_ctx *cl, struct clipboard_access_params *pa
+     .get_data = get_data,
+     .set_data = set_data,
+ };
++
++#endif
+diff --git a/player/clipboard/clipboard.c b/player/clipboard/clipboard.c
+index 9a21ff6..f7d425e 100644
+--- a/player/clipboard/clipboard.c
++++ b/player/clipboard/clipboard.c
+@@ -39,7 +39,7 @@ static const struct clipboard_backend *const clipboard_backend_list[] = {
+ #if HAVE_WIN32_DESKTOP
+     &clipboard_backend_win32,
+ #endif
+-#if HAVE_COCOA
++#if HAVE_COCOA && HAVE_SWIFT
+     &clipboard_backend_mac,
+ #endif
+ #if HAVE_WAYLAND && HAVE_WAYLAND_PROTOCOLS_1_39
+diff --git a/player/main.c b/player/main.c
+index 37eb6b1..c7edac7 100644
+--- a/player/main.c
++++ b/player/main.c
+@@ -192,7 +192,7 @@ void mp_destroy(struct MPContext *mpctx)
+ 
+     osd_free(mpctx->osd);
+ 
+-#if HAVE_COCOA
++#if HAVE_COCOA && HAVE_SWIFT
+     cocoa_set_input_context(NULL);
+ #endif
+ 
+@@ -314,7 +314,7 @@ struct MPContext *mp_create(void)
+     mp_clients_init(mpctx);
+     mpctx->osd = osd_create(mpctx->global);
+ 
+-#if HAVE_COCOA
++#if HAVE_COCOA && HAVE_SWIFT
+     cocoa_set_input_context(mpctx->input);
+ #endif
+ 
+@@ -409,7 +409,7 @@ int mp_initialize(struct MPContext *mpctx, char **options)
+ 
+     MP_STATS(mpctx, "start init");
+ 
+-#if HAVE_COCOA
++#if HAVE_COCOA && HAVE_SWIFT
+     mpv_handle *ctx = mp_new_client(mpctx->clients, "mac");
+     cocoa_set_mpv_handle(ctx);
+ #endif

@@ -42,6 +42,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_LIB="$ROOT_DIR/vendor/prefix/lib"
+# One minimum macOS for the whole bundle, defined once in build-vendor.sh.
+MIN_MACOS="$(sed -n 's/^DEPLOYMENT_TARGET="\(.*\)"$/\1/p' "$ROOT_DIR/scripts/build-vendor.sh")"
 
 BUNDLE_ROOT="$ROOT_DIR/target/bundle"
 APP_DIR="$BUNDLE_ROOT/Jellybeam.app"
@@ -92,8 +94,9 @@ step_build() {
   remap="$remap --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup"
   remap="$remap --remap-path-prefix=$ROOT_DIR=/jellybeam"
   remap="$remap --remap-path-prefix=$HOME=/home"
-  log "cargo build --release -p app (with --remap-path-prefix)"
-  ( cd "$ROOT_DIR" && RUSTFLAGS="${RUSTFLAGS:-} $remap" cargo build --release -p app )
+  log "cargo build --release -p app for macOS $MIN_MACOS (with --remap-path-prefix)"
+  ( cd "$ROOT_DIR" && MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS" RUSTFLAGS="${RUSTFLAGS:-} $remap" \
+      cargo build --release -p app )
   [ -x "$BUILT_BIN" ] || die "build succeeded but $BUILT_BIN not found"
 
 }
@@ -137,7 +140,8 @@ step_info_plist() {
   [ -f "$template" ] || die "missing $template"
   log "Writing Info.plist from scripts/Info.plist.in (CFBundleVersion $version)"
 
-  sed "s/@JELLYBEAM_VERSION@/$version/g" "$template" > "$CONTENTS_DIR/Info.plist"
+  sed -e "s/@JELLYBEAM_VERSION@/$version/g" -e "s/@JELLYBEAM_MIN_MACOS@/$MIN_MACOS/g" \
+    "$template" > "$CONTENTS_DIR/Info.plist"
 }
 
 # ---------------------------------------------------------------------------
@@ -149,17 +153,18 @@ step_icon() {
 }
 
 step_notices() {
-  log "Copying project, font, icon and core media-stack notices"
+  log "Copying project, font, icon and native-library notices"
   local notices="$RESOURCES_DIR/licenses" component source file
   mkdir -p "$notices/fonts" "$notices/icons"
   cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/THIRD-PARTY.md" "$ROOT_DIR/TRADEMARKS.md" "$notices/"
   cp "$ROOT_DIR/crates/app/assets/fonts"/OFL-*.txt "$notices/fonts/"
   cp "$ROOT_DIR/crates/app/assets/icons/LICENSE" "$notices/icons/"
-  for component in ffmpeg libplacebo libass mpv; do
-    source="$ROOT_DIR/vendor/src/$component"
-    [ -d "$source" ] || die "missing native source notices; run scripts/build-vendor.sh"
+  # Every vendored source tree: the core chain plus the leaf libraries.
+  for source in "$ROOT_DIR"/vendor/src/*/; do
+    source="${source%/}"
+    component="$(basename "$source")"
     mkdir -p "$notices/$component"
-    for file in "$source"/COPYING* "$source"/LICENSE* "$source"/Copyright; do
+    for file in "$source"/COPYING* "$source"/LICENSE* "$source"/Copyright "$source"/docs/LICENSE.TXT "$source"/docs/FTL.TXT; do
       [ -f "$file" ] || continue
       cp "$file" "$notices/$component/"
     done
@@ -350,8 +355,24 @@ step_verify_no_residue() {
     fi
   done
 
+  # docs/BUILD.md: the bundle's real minimum is its newest Mach-O, so every
+  # file must target LSMinimumSystemVersion or older and none may need the
+  # Swift runtime, which older macOS releases ship without newer symbols.
+  local minos
+  for f in "${targets[@]}"; do
+    minos="$(vtool -show-build "$f" | awk '/minos/ {print $2; exit}')"
+    if [ -z "$minos" ] || [ "$(printf '%s\n%s\n' "$minos" "$MIN_MACOS" | sort -V | tail -1)" != "$MIN_MACOS" ]; then
+      warn "$(basename "$f") requires macOS ${minos:-unknown}, newer than the bundle's $MIN_MACOS"
+      bad=1
+    fi
+    if otool -L "$f" | grep -q "libswift"; then
+      warn "$(basename "$f") links the Swift runtime"
+      bad=1
+    fi
+  done
+
   if [ "$bad" -ne 0 ]; then
-    die "dylib relocation FAILED — absolute /opt/homebrew or vendor/prefix paths remain in the bundle (see above)"
+    die "bundle verification FAILED (see above)"
   fi
 
   log "verify_no_residue: OK — ${#targets[@]} file(s) checked (binary + $(( ${#targets[@]} - 1 )) Frameworks dylibs), no residue"

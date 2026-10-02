@@ -1,8 +1,9 @@
 # Building Jellybeam
 
 Jellybeam builds on Apple Silicon Macs with Xcode Command Line Tools, Rust
-and Homebrew. The app requires macOS 13 or later. Its interface is Rust;
-libmpv, FFmpeg and the other native media libraries are built separately.
+and Homebrew. The app runs on macOS 11 or later. Its interface is Rust;
+libmpv, FFmpeg and the other native media libraries are C, built from
+source by `scripts/build-vendor.sh`. Nothing in the bundle uses Swift.
 
 ## Quick start
 
@@ -15,8 +16,8 @@ scripts/bundle-app.sh
 ```
 
 Rustup reads the pinned version and components from `rust-toolchain.toml`.
-The vendor script installs its Homebrew leaf dependencies, including
-`dav1d` and `libsoxr`, before configuring FFmpeg.
+Homebrew supplies build tools only; every library in the bundle is compiled
+from a pinned source release.
 
 The debug binary is `target/debug/jellybeam`. The assembled app is
 `target/bundle/Jellybeam.app`. Build output stays out of Git.
@@ -24,8 +25,9 @@ The debug binary is `target/debug/jellybeam`. The assembled app is
 ## Vendored components
 
 `scripts/build-vendor.sh` pins both the upstream tag and the immutable
-commit for each core component. The script is the source of truth for
-these pins and configure flags.
+commit for each core component, and the release tarball and SHA-256 for
+each leaf library. The script is the source of truth for these pins and
+configure flags.
 
 | Component | Tag |
 |---|---|
@@ -34,6 +36,10 @@ these pins and configure flags.
 | libass | `0.17.5` |
 | mpv | `v0.41.0` |
 
+Leaf libraries, built first: libpng, FreeType, HarfBuzz, FriBidi,
+libunibreak, uchardet, Little-CMS 2, dav1d and soxr. zlib, bzip2 and iconv
+come from macOS.
+
 Sources go into `vendor/src/`, builds and logs into `vendor/build/`, and
 installed headers and libraries into `vendor/prefix/`. Completed-component
 markers contain the tag, commit and build-recipe version; a changed pin or
@@ -41,26 +47,41 @@ recipe triggers a rebuild.
 When a dependency changes, remove the dependent components' markers too.
 
 ```sh
+scripts/build-vendor.sh deps        # the leaf libraries
 scripts/build-vendor.sh ffmpeg      # one component
 scripts/build-vendor.sh libplacebo
 scripts/build-vendor.sh libass
 scripts/build-vendor.sh mpv
+scripts/build-vendor.sh verify      # every dylib targets the deployment target
 scripts/build-vendor.sh clean       # removes build output and the prefix
 ```
 
-Leaf dependencies are Homebrew builds, rather than immutable source pins.
-Record their exact versions and retain corresponding source and notices
-for a distributed binary; see [RELEASE.md](RELEASE.md) and
-[../THIRD-PARTY.md](../THIRD-PARTY.md).
+Retain the corresponding source and notices for a distributed binary; see
+[RELEASE.md](RELEASE.md) and [../THIRD-PARTY.md](../THIRD-PARTY.md).
 
 Native compilation remaps source paths; FFmpeg and mpv diagnostic build
 configuration strings are sanitized before compilation. Bundle validation
 checks every Mach-O artifact for the developer home and checkout paths
 after removing build-only runtime search paths.
 
-The native stack is built for `arm64` with a macOS 11 deployment target;
-that does not lower the app's macOS 13 requirement. Intel and universal
-builds are unsupported.
+### Deployment target
+
+Every Mach-O in the bundle targets one macOS version, `DEPLOYMENT_TARGET`
+in `scripts/build-vendor.sh` (11.0, the first macOS on Apple Silicon).
+`bundle-app.sh` builds the Rust binary for the same target, writes it into
+`LSMinimumSystemVersion`, and refuses to finish if any bundled file is
+stamped for a newer macOS or links the Swift runtime. A bundle's real
+minimum is its newest file, so a single Homebrew bottle (compiled for the
+build machine's macOS) would silently raise it; that is why the leaf
+libraries are built from source.
+
+mpv is configured as `libmpv` only (`-Dcplayer=false`, `-Dswift-build=disabled`).
+Its standalone player, Cocoa window backend, media-key and Touch Bar
+integrations are Swift and are not built: Jellybeam owns the window, the
+render context and Now Playing itself. Cocoa and `gl-cocoa` stay enabled
+because VideoToolbox's OpenGL interop needs them.
+
+Intel and universal builds are unsupported.
 
 ## libplacebo: OpenGL vs Vulkan
 

@@ -7,7 +7,8 @@ codebase holds to.
 
 ## Requirements
 
-- **Apple Silicon Mac** on macOS 13 or later. The `app` and `player` crates
+- **Apple Silicon Mac** with current Xcode Command Line Tools (the app you
+  build runs on macOS 11 or later). The `app` and `player` crates
   are macOS-only (they embed an `NSOpenGLContext` in a GPUI window and link
   the vendored libmpv). The other crates build anywhere.
 - **Xcode Command Line Tools**: `xcode-select --install`.

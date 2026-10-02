@@ -6,6 +6,7 @@ mod events;
 mod node;
 mod sys;
 
+use std::borrow::Cow;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -128,6 +129,92 @@ pub struct VideoParams {
     /// (HDR10/Dolby Vision) or `"hlg"` (HLG). The single most direct "is
     /// this actually HDR" signal among these fields.
     pub gamma: Option<String>,
+}
+
+/// Reference white libplacebo and mpv assume for SDR/linear 1.0, in nits
+/// (`MP_REF_WHITE`, `PL_COLOR_SDR_WHITE`); with a linear target, output 1.0 is
+/// this luminance and values above it are brighter than SDR white.
+pub const REFERENCE_WHITE_NITS: f64 = 203.0;
+
+/// Primaries of an extended-range output, named as mpv's `target-prim` choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetPrimaries {
+    Bt709,
+    DisplayP3,
+}
+
+/// What mpv's colour pipeline renders for: the default SDR output, or
+/// extended-range linear light for an EDR surface (crates/app/ARCHITECTURE.md
+/// "Video layer").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OutputTarget {
+    /// mpv's own defaults: tone-mapped to SDR, transfer picked from the source.
+    Sdr,
+    /// Linear light with 1.0 at [`REFERENCE_WHITE_NITS`], tone-mapped to
+    /// `peak_nits`; the embedder encodes it for the compositor.
+    ExtendedLinear {
+        primaries: TargetPrimaries,
+        peak_nits: f64,
+    },
+}
+
+impl OutputTarget {
+    /// The `target-trc`/`target-prim`/`target-peak` values for this target;
+    /// `Sdr` restores `auto` on all three so the default path is unchanged.
+    /// vo_libmpv renders through vo_gpu's `gl_video`, whose delinearize step
+    /// clamps every non-linear transfer to 1.0, so `linear` is the only
+    /// transfer that carries values above SDR white.
+    pub fn mpv_options(&self) -> [(&'static CStr, Cow<'static, str>); 3] {
+        match *self {
+            OutputTarget::Sdr => [
+                (c"target-trc", Cow::Borrowed("auto")),
+                (c"target-prim", Cow::Borrowed("auto")),
+                (c"target-peak", Cow::Borrowed("auto")),
+            ],
+            OutputTarget::ExtendedLinear {
+                primaries,
+                peak_nits,
+            } => [
+                (c"target-trc", Cow::Borrowed("linear")),
+                (
+                    c"target-prim",
+                    Cow::Borrowed(match primaries {
+                        TargetPrimaries::Bt709 => "bt.709",
+                        TargetPrimaries::DisplayP3 => "display-p3",
+                    }),
+                ),
+                (
+                    c"target-peak",
+                    // mpv's `target-peak` is an integer choice/range (10..10000).
+                    Cow::Owned(format!("{}", peak_nits.round().clamp(10.0, 10000.0) as i64)),
+                ),
+            ],
+        }
+    }
+}
+
+/// The colour-target options mpv currently holds, read back as strings
+/// (`"auto"`, `"linear"`, `"812"`) -- see [`Player::output_target_applied`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AppliedOutputTarget {
+    pub trc: Option<String>,
+    pub primaries: Option<String>,
+    pub peak: Option<String>,
+}
+
+/// Where [`Player::render_to`] draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderTarget {
+    /// GL framebuffer name; 0 is the default framebuffer.
+    pub fbo: i32,
+    pub width: i32,
+    pub height: i32,
+    /// render.h `MPV_RENDER_PARAM_FLIP_Y`: true for the default framebuffer's
+    /// orientation.
+    pub flip_y: bool,
+    /// render_gl.h `mpv_opengl_fbo.internal_format` (e.g. `GL_RGBA16F`), or
+    /// 0 if unknown.
+    pub internal_format: i32,
 }
 
 /// Network/demuxer read-ahead cache state -- see [`Player::cache_state`].
@@ -747,6 +834,34 @@ impl Player {
         }
     }
 
+    /// The decoded video's transfer function (`video-params/gamma`, e.g.
+    /// `"pq"`, `"hlg"`, `"bt.1886"`), or `None` before the first frame.
+    pub fn video_transfer(&self) -> Option<String> {
+        self.get_string(c"video-params/gamma")
+    }
+
+    /// Points mpv's colour pipeline at `target` (see [`OutputTarget`]); mpv
+    /// redraws with the new target on its next frame.
+    pub fn set_output_target(&self, target: &OutputTarget) -> Result<(), PlayerError> {
+        for (name, value) in target.mpv_options() {
+            let value = CString::new(value.into_owned())
+                .map_err(|e| PlayerError::Mpv(format!("option value contains NUL: {e}")))?;
+            check(unsafe {
+                sys::mpv_set_property_string(self.handle, name.as_ptr(), value.as_ptr())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Reads back the colour-target options mpv currently holds.
+    pub fn output_target_applied(&self) -> AppliedOutputTarget {
+        AppliedOutputTarget {
+            trc: self.get_string(c"target-trc"),
+            primaries: self.get_string(c"target-prim"),
+            peak: self.get_string(c"target-peak"),
+        }
+    }
+
     // -- Property getters shared by `hwdec_current` and the info-overlay
     // -- getters below. Every mpv numeric
     // property this crate reads is requested through `MPV_FORMAT_DOUBLE`/
@@ -1166,6 +1281,22 @@ impl Player {
     /// subsequent calls from any other thread trip a `debug_assert_eq!`
     /// below.
     pub fn render(&self, fbo: i32, width: i32, height: i32) -> Result<(), PlayerError> {
+        // Flip only for the default framebuffer (fbo == 0), whose coordinate
+        // system is flipped relative to mpv's internal convention — see
+        // render.h's MPV_RENDER_PARAM_FLIP_Y doc. App-owned FBOs render
+        // right-side-up already.
+        self.render_to(RenderTarget {
+            fbo,
+            width,
+            height,
+            flip_y: fbo == 0,
+            internal_format: 0,
+        })
+    }
+
+    /// [`Player::render`] with every `mpv_opengl_fbo` field and the flip
+    /// chosen by the caller; same threading contract.
+    pub fn render_to(&self, target: RenderTarget) -> Result<(), PlayerError> {
         let this_thread = std::thread::current().id();
         let render_thread = *self.render_thread_id.get_or_init(|| this_thread);
         debug_assert_eq!(
@@ -1178,16 +1309,12 @@ impl Player {
             return Err(PlayerError::NotLoaded);
         }
         let mut fbo_desc = sys::mpv_opengl_fbo {
-            fbo,
-            w: width,
-            h: height,
-            internal_format: 0,
+            fbo: target.fbo,
+            w: target.width,
+            h: target.height,
+            internal_format: target.internal_format,
         };
-        // Flip only for the default framebuffer (fbo == 0), whose coordinate
-        // system is flipped relative to mpv's internal convention — see
-        // render.h's MPV_RENDER_PARAM_FLIP_Y doc. App-owned FBOs render
-        // right-side-up already.
-        let mut flip_y: c_int = if fbo == 0 { 1 } else { 0 };
+        let mut flip_y: c_int = c_int::from(target.flip_y);
         let mut params = [
             sys::mpv_render_param {
                 type_: sys::MPV_RENDER_PARAM_OPENGL_FBO,
@@ -1270,6 +1397,60 @@ mod tests {
     #[test]
     fn player_is_send_and_sync() {
         assert_send_sync::<Player>();
+    }
+
+    // --- OutputTarget::mpv_options ----------------------------------------
+
+    fn options_as_strings(target: OutputTarget) -> Vec<(String, String)> {
+        target
+            .mpv_options()
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.to_str().expect("option names are ASCII").to_string(),
+                    v.to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sdr_target_restores_mpv_defaults() {
+        assert_eq!(
+            options_as_strings(OutputTarget::Sdr),
+            [
+                ("target-trc".to_string(), "auto".to_string()),
+                ("target-prim".to_string(), "auto".to_string()),
+                ("target-peak".to_string(), "auto".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn extended_linear_target_sets_linear_trc_primaries_and_peak() {
+        let target = OutputTarget::ExtendedLinear {
+            primaries: TargetPrimaries::DisplayP3,
+            peak_nits: REFERENCE_WHITE_NITS * 4.0,
+        };
+        assert_eq!(
+            options_as_strings(target),
+            [
+                ("target-trc".to_string(), "linear".to_string()),
+                ("target-prim".to_string(), "display-p3".to_string()),
+                ("target-peak".to_string(), "812".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn extended_linear_peak_is_clamped_to_mpvs_range() {
+        let bt709 = |peak_nits| OutputTarget::ExtendedLinear {
+            primaries: TargetPrimaries::Bt709,
+            peak_nits,
+        };
+        assert_eq!(bt709(1.0e6).mpv_options()[2].1, "10000");
+        assert_eq!(bt709(1.0).mpv_options()[2].1, "10");
+        assert_eq!(bt709(1.0).mpv_options()[1].1, "bt.709");
     }
 
     // --- FrameDropStats::total ------------------------------------------

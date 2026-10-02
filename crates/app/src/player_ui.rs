@@ -1114,6 +1114,9 @@ pub(crate) struct PlayerLiveInfo {
     pub video_params: player::VideoParams,
     pub frame_drops: player::FrameDropStats,
     pub cache: player::CacheState,
+    /// `edr::output_readout` for the info overlay's "HDR output" row; built
+    /// only while the overlay is open, since it reads mpv every redraw.
+    pub hdr_output: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2861,6 +2864,7 @@ fn render_info_overlay(
                 .unwrap_or_else(|| "unknown".into()),
         ))
         .child(row("Color (gamma / matrix / primaries)", color))
+        .children(info.hdr_output.clone().map(|o| row("HDR output", o)))
         .child(row(
             "FPS",
             match info.container_fps {

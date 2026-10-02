@@ -79,6 +79,7 @@ without inflating the file count.
 | `31-h264-ac3-5.1.mkv` | 5.1 surround AC-3 (verified via ffprobe: 6 channels). |
 | `32-h264-23.976fps-aac.mkv` | 23.976 fps (`24000/1001`) variant. |
 | `33-h264-50fps-aac.mkv` | 50 fps variant. |
+| `34-hevc10-hdr10-nits-ladder-aac.mkv` | HDR10 luminance ladder: six neutral bars, left to right 100, 203, 400, 1000, 2000 and 4000 nits (PQ). With EDR working the 203-nit bar matches the app's white UI and the bars to its right are brighter, up to the display's headroom; tone-mapped to SDR they converge on white. The info overlay's "HDR output" row states which. |
 
 ### HDR10 metadata gotcha
 
